@@ -1,10 +1,24 @@
-from pyhackrf2 import HackRF
-from time import sleep
-import numpy as np
-import math
-
-
-hackrf = HackRF()
+# from src.pyhackrf3 import HackRF
+# from time import sleep
+# import numpy as np
+# import math
+#
+#
+# hackrf = HackRF()
+#
+# arr = np.zeros(128)
+#
+# def tx_pipe() -> tuple[int, bytes, int]:
+#     global arr
+#
+#     arr_bytes = arr.tobytes()
+#
+#     return 1, arr_bytes, len(arr_bytes)
+#
+#
+# hackrf.start_tx(pipe_function=tx_pipe)
+# sleep(1)
+# hackrf.stop_tx()
 
 
 """

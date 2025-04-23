@@ -170,5 +170,8 @@ libhackrf.hackrf_start_tx.argtypes = [
 libhackrf.hackrf_stop_tx.restype = c_int
 libhackrf.hackrf_stop_tx.argtypes = [p_hackrf_device]
 
+libhackrf.hackrf_error_name.restype = c_char_p
+libhackrf.hackrf_error_name.argtypes = [c_int]
+
 if libhackrf.hackrf_init() != 0:
     raise RuntimeError(f"Unable to initialize libhackrf {LIBNAME}.")

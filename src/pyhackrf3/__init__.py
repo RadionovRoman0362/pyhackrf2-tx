@@ -1,3 +1,4 @@
+import ctypes
 from ctypes import *
 import numpy as np
 from collections.abc import Callable
@@ -14,30 +15,6 @@ import struct
 
 
 class HackRF(object):
-    _center_freq: int = 100e6
-    _sample_rate: int = 20e6
-    _filter_bandwidth: int
-    _amplifier_on: bool = False
-    _bias_tee_on: bool = False
-    _lna_gain: int = 16
-    _vga_gain: int = 16
-    _txvga_gain: int = 10
-    _device_opened = False
-    _device_pointer: p_hackrf_device = p_hackrf_device(None)
-    _transceiver_mode: TransceiverMode = TransceiverMode.HACKRF_TRANSCEIVER_MODE_OFF
-    # function that will be called on incoming data. Argument is data bytes.
-    # return value True means that we need to stop data acquisiton
-    _rx_pipe_function: Callable[[bytes], int] = None
-    # function that will be called on incoming data during sweep. Argument is dict like {center_freq1: bytes1, center_freq2: bytes2, ...}
-    # return value True means that we need to stop data acquisiton
-    _sweep_pipe_function: Callable[[dict], int] = None
-    # counts samples that already have been stored or transferred to pipe function
-    _sample_count: int = 0
-    # set limit of samples to be stored or transferred to pipe function
-    _sample_count_limit: int = 0
-    # data collected in rx mode
-    buffer: bytearray()
-
     @staticmethod
     def enumerate() -> list[str]:
         """
@@ -53,6 +30,7 @@ class HackRF(object):
         self._transceiver_mode = TransceiverMode.HACKRF_TRANSCEIVER_MODE_OFF
         self._bias_tee_on = False
         self.close()
+        print(libhackrf.hackrf_error_name(code))
         raise RuntimeError(
             ERRORS.get(code, f"libhackrf returned unknown error code {code}")
         )
@@ -62,6 +40,35 @@ class HackRF(object):
         Create instance for device_index, which corresponds to array obtained from enumerate()
         Will open device automatically and set parameters to the safe defaults.
         """
+        self._center_freq: int = 100e6
+        self._sample_rate: int = 20e6
+        self._filter_bandwidth: int
+        self._amplifier_on: bool = False
+        self._bias_tee_on: bool = False
+        self._lna_gain: int = 16
+        self._vga_gain: int = 16
+        self._txvga_gain: int = 10
+        self._device_opened = False
+        self._transceiver_mode: TransceiverMode = TransceiverMode.HACKRF_TRANSCEIVER_MODE_OFF
+        # function that will be called on transmitting data. Arguments is valid length.
+        # return value is tuple where first argument defines whether we need to stop data transmission,
+        # second and third argument are data and valid length that should be set in pipe function.
+        self._tx_pipe_function: Callable[[int], tuple[int, np.ndarray, int]] = None
+        # function that will be called on incoming data. Argument is data bytes.
+        # return value True means that we need to stop data acquisiton
+        self._rx_pipe_function: Callable[[bytes], int] = None
+        # function that will be called on incoming data during sweep. Argument is dict like {center_freq1: bytes1, center_freq2: bytes2, ...}
+        # return value True means that we need to stop data acquisiton
+        self._sweep_pipe_function: Callable[[dict], int] = None
+        # counts samples that already have been stored or transferred to pipe function
+        self._sample_count: int = 0
+        # set limit of samples to be stored or transferred to pipe function
+        self._sample_count_limit: int = 0
+        # data collected in rx mode
+        self.buffer: bytearray = bytearray()
+        self._persistent_buffer: bytearray = bytearray()
+        self._device_pointer: p_hackrf_device = p_hackrf_device(None)
+
         self.open(device_index)
 
         self.amplifier_on = False
@@ -82,7 +89,24 @@ class HackRF(object):
         self._cfunc_tx_callback = CFUNCTYPE(c_int, POINTER(lib_hackrf_transfer))(
             self._tx_callback
         )
-        self._rx_pipe_function = None
+
+    def open_by_serial(self, serial: str = None) -> None:
+        """
+        Open device to start communications
+        """
+        if serial is not None:
+            self._check_error(
+                libhackrf.hackrf_open_by_serial(
+                    serial, pointer(self._device_pointer)
+                )
+            )
+        else:
+            self._check_error(
+                libhackrf.hackrf_open(
+                    pointer(self._device_pointer)
+                )
+            )
+        self._device_opened = True
 
     def open(self, device_index: int = 0) -> None:
         """
@@ -110,7 +134,7 @@ class HackRF(object):
             return
 
         libhackrf.hackrf_close(self._device_pointer)
-        self.device_opened = False
+        self._device_opened = False
 
     def __del__(self):
         self.close()
@@ -122,6 +146,7 @@ class HackRF(object):
         Will return 1  when number of samples reaches self._sample_count_limit or when pipe function returns True.
         Internal use only.
         """
+        valid_length = hackrf_transfer.contents.valid_length
         bytes = bytearray(
             cast(
                 hackrf_transfer.contents.buffer,
@@ -285,26 +310,46 @@ class HackRF(object):
 
     def _tx_callback(self, hackrf_transfer: lib_hackrf_transfer) -> int:
         """
-        Callback function will feed self.buffer into HackRF in portions.
+        Callback function will feed data received in pipe function into HackRF.
         As specified in libhackrf docs, it should return nonzero when no more samples needed.
         Internal use only.
         """
-        CHUNK_SIZE = 1000000
-        chunk, self.buffer = self.buffer[0:CHUNK_SIZE], self.buffer[CHUNK_SIZE:]
-        hackrf_transfer.contents.buffer = (c_byte * len(chunk)).from_buffer(
-            bytearray(chunk)
+        # Get new data and its length from the pipe function
+        ret, data, valid_length = self._tx_pipe_function(hackrf_transfer.contents.valid_length)
+        data = data.astype(np.uint8)
+
+        if valid_length == 0:
+            return 0
+
+        # Ensure self._persistent_buffer is large enough to hold the new data
+        if not hasattr(self, '_persistent_buffer') or len(self._persistent_buffer) < valid_length:
+            self._persistent_buffer = bytearray(valid_length)
+
+        # Copy the new data into the persistent buffer
+        self._persistent_buffer[:valid_length] = bytearray(data.tobytes())
+
+        # Assign the persistent buffer to hackrf_transfer.contents.buffer
+        hackrf_transfer.contents.valid_length = valid_length
+        ctypes.memmove(
+            hackrf_transfer.contents.buffer,
+            (c_byte * valid_length).from_buffer(self._persistent_buffer),
+            valid_length
         )
-        hackrf_transfer.contents.valid_length = len(chunk)
-        if not len(self.buffer):
+
+        # Check if transmission should stop
+        if ret != 0:
             self._transceiver_mode = TransceiverMode.HACKRF_TRANSCEIVER_MODE_OFF
             self._bias_tee_on = False
             return 1
+
         return 0
 
-    def start_tx(self) -> None:
+    def start_tx(self, pipe_function: Callable[[int], tuple[int, np.ndarray, int]] = None) -> None:
         """
         Send data from self.buffer to HackRF. This can be stopped by executing stop_rx()
         """
+        self._tx_pipe_function = pipe_function
+        self._sample_count = 0
         self._transceiver_mode = TransceiverMode.HACKRF_TRANSCEIVER_MODE_TRANSMIT
         self._check_error(
             libhackrf.hackrf_start_tx(

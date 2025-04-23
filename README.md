@@ -1,6 +1,6 @@
-# pyhackrf2
+# pyhackrf3
 
-A Python wrappper for libhackrf rewritten.
+A Python wrappper for libhackrf rewritten (again).
 
 # Description
 
@@ -8,12 +8,14 @@ Python bindings for native HackRF library libhackrf that aims to implement all f
 
 Supports receive, transmit, sweep, setting all gains, baseband filter and bias tee.
 
+Now supports transfer callback for transmitting raw data via HackRF device.
+
 # Quick Example
 
 To take samples and plot the power spectral density:
 
 ```python
-from pyhackrf2 import HackRF
+from pyhackrf3 import HackRF
 # needed to plot
 from matplotlib.pylab import psd
 
@@ -31,7 +33,7 @@ psd(samples, NFFT=1024, Fs=hackrf.sample_rate/1e6, Fc=hackrf.center_freq/1e6)
 
 First, import class from module
 ```python
-from pyhackrf2 import HackRF
+from pyhackrf3 import HackRF
 ```
 
 
